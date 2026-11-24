@@ -1,44 +1,65 @@
-# StarDevNett untuk Windows
+# StarDevNett (SockShare) — Android + Windows
 
-Penerima data seluler dari HP yang menjalankan **StarDevNett / SockShare** (mode **BAGIKAN**).
-PC tersambung ke HP lewat **WiFi Direct** atau **kabel USB (adb)**, lalu semua trafik browser &
-aplikasi yang ikut proxy sistem Windows lewat kuota HP.
-
-## Cara pakai
-
-1. Di HP: buka StarDevNett → **MULAI BAGIKAN**.
-2. Di PC:
-   - **WiFi Direct**: sambung WiFi PC ke `DIRECT-SS-<nama>` (password sesuai di HP).
-   - **USB**: colok kabel, aktifkan *USB debugging*, taruh `adb.exe` (platform-tools) di folder
-     yang sama dengan `StarDevNett-Windows.exe` atau di PATH.
-3. Jalankan `StarDevNett-Windows.exe` → pilih mode → **SAMBUNG**.
-4. Selesai. Tekan **PUTUSKAN** (atau tutup aplikasi) untuk mengembalikan proxy Windows.
-
-IP HP dicari otomatis (192.168.49.1 / gateway). Port 1080, user `yt`, password `sockshare`
-adalah bawaan aplikasi HP; semuanya bisa diubah di jendela kalau nanti HP diupdate.
-
-## Yang didukung
-
-- HTTP, HTTPS (CONNECT), dan SOCKS5 di satu port lokal `127.0.0.1:10808`
-- DNS di-resolve di HP (tidak bocor ke jaringan PC)
-- Proxy sistem Windows diatur otomatis dan dikembalikan saat putus / tutup / start berikutnya jika crash
-- Aplikasi yang mengabaikan proxy sistem (game, beberapa klien desktop): set manual
-  SOCKS5 `127.0.0.1:10808` tanpa username/password
-- Tidak ada UDP (sama seperti versi HP) — QUIC/HTTP3 otomatis fallback ke TCP di browser
-
-## Build .exe
-
-**GitHub Actions** (tanpa PC): upload folder ini ke repo → tab *Actions* → *Build Windows EXE* →
-*Run workflow* → unduh artifact `StarDevNett-Windows`. Push tag `v1.0` untuk dapat file di *Releases*.
-
-**Lokal**: `build.bat` → `dist\StarDevNett-Windows.exe`.
-
-## CLI (opsional)
+Berbagi data seluler antar perangkat. **HP sumber** membuka SOCKS5 + WiFi Direct;
+**HP penerima** atau **PC Windows** menyambung dan memakai kuota HP sumber.
 
 ```
-StarDevNett-Windows.exe --cli --mode wifi
-StarDevNett-Windows.exe --cli --host 192.168.49.1 --port 1080 --user yt --password sockshare
+android/              proyek AIDE (buka langsung di AIDE PRO, tanpa build.gradle)
+windows/              aplikasi Windows (Python) + installer.iss
+ci/android-gradle/    proyek Gradle khusus CI (menunjuk ke android/, tidak mengganggu AIDE)
+.github/workflows/    android.yml -> APK   |   windows.yml -> Setup.exe
 ```
 
-Catatan: Windows SmartScreen bisa memperingatkan untuk exe baru yang belum dikenal
-(*More info → Run anyway*). Pengaturan tersimpan di `%APPDATA%\StarDevNett\config.json`.
+Satu repo, dua output. Push ke GitHub → tab **Actions**:
+
+| Workflow | Hasil (artifact / Releases) |
+|---|---|
+| Build Android APK | `StarDevNett-Android.apk` |
+| Build Windows Installer | `StarDevNett-Setup.exe` (installer) + `StarDevNett-Portable.zip` |
+
+Push tag `v1.2` (dst.) untuk menaruh keduanya di halaman **Releases**.
+
+## Fitur baru (v1.2)
+
+- Kecepatan **download / upload per detik** + **total download / upload** sesi (Android & Windows)
+- Windows: grafik kecepatan 30 detik terakhir, jumlah koneksi aktif
+- Windows: **installer** — adb sudah ikut terpasang di `platform-tools\`, tidak perlu file lain
+- Handshake SOCKS5 di-pipeline (lebih cepat tiap buka koneksi lewat WiFi Direct), buffer lebih besar,
+  pengiriman paket TUN diblok per 16×MSS (Android mode CONNECT)
+
+## Pakai di Windows
+
+1. Install `StarDevNett-Setup.exe` (tanpa admin; dipasang per-user).
+2. HP: **MULAI BAGIKAN**.
+3. PC: sambung WiFi ke `DIRECT-SS-<nama>` **atau** colok USB (USB debugging aktif) → buka StarDevNett →
+   pilih mode → **SAMBUNG**.
+
+Port 1080 · user `yt` · password `sockshare` adalah bawaan app HP; bisa diubah di jendela.
+Proxy sistem Windows diatur otomatis dan dikembalikan saat putus/tutup.
+Aplikasi yang tidak ikut proxy sistem: set manual SOCKS5 `127.0.0.1:10808` (tanpa login).
+
+## Tanda tangan APK (supaya APK baru bisa menimpa yang lama)
+
+Tanpa pengaturan ini, tiap build memakai kunci baru → APK baru harus meng-uninstall yang lama dulu.
+Sekali saja, buat keystore (Termux / PC):
+
+```
+keytool -genkeypair -keystore sockshare.keystore -alias sockshare -keyalg RSA -keysize 2048 -validity 10000
+base64 -w0 sockshare.keystore      # hasilnya ditempel ke secret pertama
+```
+
+Di GitHub: **Settings → Secrets and variables → Actions → New repository secret**:
+
+- `ANDROID_KEYSTORE_BASE64` — isi base64 di atas
+- `ANDROID_KEYSTORE_PASSWORD` — password keystore
+- `ANDROID_KEY_ALIAS` — `sockshare`
+
+Simpan file `sockshare.keystore` baik-baik (jangan di-commit).
+
+## Catatan
+
+- `android/bin/` dan `android/gen/` tidak ikut repo; AIDE membuatnya sendiri saat build.
+- Upload dari browser HP kadang melewatkan folder berawalan titik: kalau `.github/` tidak ikut,
+  buat manual lewat *Add file → Create new file* dengan nama `.github/workflows/android.yml` dan
+  `.github/workflows/windows.yml`, lalu tempel isinya.
+- SmartScreen Windows bisa memperingatkan untuk installer baru: *More info → Run anyway*.

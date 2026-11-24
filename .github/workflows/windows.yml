@@ -1,0 +1,79 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches: [main, master]
+    paths: ["windows/**", ".github/workflows/windows.yml"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Tes inti proxy (relay)
+        run: python -c "import relay, winnet; print('import ok')"
+
+      - name: Build aplikasi (onedir = start cepat)
+        run: >
+          pyinstaller --noconfirm --onedir --windowed
+          --name StarDevNett
+          --icon assets/icon.ico
+          --add-data "assets;assets"
+          main.py
+
+      - name: Unduh platform-tools (adb)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://dl.google.com/android/repository/platform-tools-latest-windows.zip" -OutFile pt.zip
+          Expand-Archive pt.zip -DestinationPath pt_tmp -Force
+          New-Item -ItemType Directory -Force platform-tools | Out-Null
+          foreach ($f in "adb.exe","AdbWinApi.dll","AdbWinUsbApi.dll") {
+            Copy-Item "pt_tmp/platform-tools/$f" platform-tools/ -ErrorAction Stop
+          }
+
+      - name: Pasang Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Bangun installer
+        shell: pwsh
+        run: |
+          $ver = "1.2." + $env:GITHUB_RUN_NUMBER
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$ver" installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC gagal" }
+
+      - name: Zip portable (opsional, sudah termasuk adb)
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse platform-tools dist/StarDevNett/platform-tools
+          Compress-Archive -Path dist/StarDevNett -DestinationPath ../out/StarDevNett-Portable.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StarDevNett-Windows
+          path: |
+            out/StarDevNett-Setup.exe
+            out/StarDevNett-Portable.zip
+
+      - name: Release (tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/StarDevNett-Setup.exe
+            out/StarDevNett-Portable.zip

@@ -1,4 +1,14 @@
+# AIDE (dibuat ulang otomatis saat build di HP)
+android/bin/
+android/gen/
+android/.aide/
+# Windows build
+windows/build/
+windows/dist/
+windows/platform-tools/
+windows/pt_tmp/
+windows/pt.zip
+windows/*.spec
+out/
 __pycache__/
-build/
-dist/
-*.spec
+*.keystore

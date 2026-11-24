@@ -1,0 +1,17 @@
+// Proyek Gradle KHUSUS CI. Sengaja dipisah dari folder android/ supaya AIDE tetap
+// membuka android/ sebagai proyek AIDE biasa (tanpa build.gradle di dalamnya).
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+rootProject.name = "SockShareCI"
+include ':app'
