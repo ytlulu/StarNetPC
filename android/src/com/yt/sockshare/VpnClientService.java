@@ -24,6 +24,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.ArrayList;
@@ -39,7 +40,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Mode CONNECT (HP penerima): tangkap semua trafik lewat VpnService,
  * TCP diteruskan ke SOCKS5 HP sumber, DNS (UDP 53) diubah jadi DNS-over-TCP lewat SOCKS5.
- * UDP lain dibuang (browser otomatis fallback dari QUIC ke TCP). IPv4 saja.
+ * UDP lain (voice Discord, game, QUIC) lewat SOCKS5 UDP ASSOCIATE. IPv4 saja.
  */
 public class VpnClientService extends VpnService {
 
@@ -59,6 +60,7 @@ public class VpnClientService extends VpnService {
     private FileOutputStream tunOut;
     private volatile boolean stop = false;
     private final ConcurrentHashMap<Long, Flow> table = new ConcurrentHashMap<Long, Flow>();
+    private final ConcurrentHashMap<Integer, UdpFlow> udpTable = new ConcurrentHashMap<Integer, UdpFlow>();
     private final ExecutorService pool = Executors.newCachedThreadPool();
     private final Random rnd = new Random();
     private static volatile VpnClientService inst = null;
@@ -382,10 +384,13 @@ public class VpnClientService extends VpnService {
         final int sp = u16(p, t);
         int dp = u16(p, t + 2);
         int ulen = u16(p, t + 4);
-        if (dp != 53) return; // UDP lain dibuang
         int end = Math.min(n, t + ulen);
         if (end <= t + 8) return;
         final byte[] q = Arrays.copyOfRange(p, t + 8, end);
+        if (dp != 53) { // voice/game/QUIC: lewat SOCKS5 UDP ASSOCIATE
+            udpForward(src, sp, dst, dp, q);
+            return;
+        }
         pool.execute(new Runnable() {
             public void run() {
                 Socket s = null;
@@ -410,6 +415,51 @@ public class VpnClientService extends VpnService {
                 }
             }
         });
+    }
+
+    private final UdpFlow.Binder udpBinder = new UdpFlow.Binder() {
+        public void bindTcp(Socket s) throws IOException {
+            Network wn = wifi;
+            if (wn != null) wn.bindSocket(s); // paksa lewat WiFi hotspot
+        }
+
+        public void bindUdp(DatagramSocket d) throws IOException {
+            Network wn = wifi;
+            if (wn != null) wn.bindSocket(d);
+        }
+    };
+
+    private final UdpFlow.Sink udpSink = new UdpFlow.Sink() {
+        public void packet(UdpFlow f, int remoteIp, int remotePort, byte[] d, int off, int len) {
+            sendUdp(remoteIp, remotePort, f.srcIp, f.srcPort, d);
+            downBytes.addAndGet(len);
+        }
+
+        public void sent(int n) {
+            upBytes.addAndGet(n);
+        }
+
+        public void closed(UdpFlow f) {
+            udpTable.remove(Integer.valueOf(f.srcPort), f);
+        }
+    };
+
+    private void udpForward(int src, int sp, int dst, int dp, byte[] data) {
+        Integer k = Integer.valueOf(sp);
+        UdpFlow f = udpTable.get(k);
+        if (f == null || f.isClosed()) {
+            if (udpTable.size() >= 256) return;
+            UdpFlow nf = new UdpFlow(srvHost, srvPort, user, pass, src, sp, udpBinder, udpSink);
+            UdpFlow old = udpTable.putIfAbsent(k, nf);
+            if (old != null && !old.isClosed()) {
+                f = old;
+            } else {
+                if (old != null) udpTable.put(k, nf);
+                f = nf;
+                nf.start(pool);
+            }
+        }
+        f.send(dst, dp, data);
     }
 
     private void sendUdp(int sIp, int sPort, int dIp, int dPort, byte[] d) {
@@ -599,6 +649,9 @@ public class VpnClientService extends VpnService {
         inst = null;
         ArrayList<Flow> all = new ArrayList<Flow>(table.values());
         for (Flow f : all) f.finish();
+        ArrayList<UdpFlow> ua = new ArrayList<UdpFlow>(udpTable.values());
+        for (UdpFlow u : ua) u.close();
+        udpTable.clear();
         try {
             if (cm != null && wcb != null) cm.unregisterNetworkCallback(wcb);
         } catch (Exception e) {

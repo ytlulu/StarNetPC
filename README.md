@@ -19,11 +19,19 @@ Satu repo, dua output. Push ke GitHub → tab **Actions**:
 
 Push tag `v1.2` (dst.) untuk menaruh keduanya di halaman **Releases**.
 
-## Fitur baru (v1.2)
+## Fitur baru (v1.3): UDP
+
+Sebelumnya semua UDP (kecuali DNS) dibuang, jadi **voice Discord** ("RTC Connecting" terus), game online,
+panggilan WhatsApp/Meet, dan QUIC tidak bisa lewat. Sekarang HP sumber mendukung **SOCKS5 UDP ASSOCIATE**
+dan mode CONNECT di HP penerima meneruskan UDP lewat situ. **HP sumber dan HP penerima harus sama-sama
+v1.3** (HP sumber lama menolak UDP). Windows: proxy sistem hanya untuk TCP; UDP di PC belum didukung.
+
+## Fitur v1.2
 
 - Kecepatan **download / upload per detik** + **total download / upload** sesi (Android & Windows)
 - Windows: grafik kecepatan 30 detik terakhir, jumlah koneksi aktif
 - Windows: **installer** — adb sudah ikut terpasang di `platform-tools\`, tidak perlu file lain
+- DNS cache 30 detik + alamat IPv4 dicoba dulu di HP sumber
 - Handshake SOCKS5 di-pipeline (lebih cepat tiap buka koneksi lewat WiFi Direct), buffer lebih besar,
   pengiriman paket TUN diblok per 16×MSS (Android mode CONNECT)
 

@@ -5,6 +5,8 @@ import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -137,7 +139,11 @@ public class Socks5Server {
             }
             int dport = (rd(in) << 8) | rd(in);
 
-            if (cmd != 1) { // UDP ASSOCIATE / BIND belum didukung
+            if (cmd == 3) { // UDP ASSOCIATE (voice Discord, game, QUIC, dll)
+                udpAssociate(c, out);
+                return;
+            }
+            if (cmd != 1) { // BIND belum didukung
                 reply(out, 7);
                 return;
             }
@@ -165,14 +171,145 @@ public class Socks5Server {
         }
     }
 
+    // ---------------- UDP ASSOCIATE ----------------
+
+    /**
+     * Relay UDP: klien kirim datagram berbungkus header SOCKS5 ke port relay;
+     * diteruskan lewat socket yang di-bind ke jaringan seluler. Hidup selama TCP kontrol terbuka.
+     */
+    private void udpAssociate(final Socket c, OutputStream out) throws IOException {
+        final DatagramSocket relay = new DatagramSocket();
+        final DatagramSocket outS = new DatagramSocket();
+        try {
+            Network net = ProxyService.cellular;
+            if (net != null) net.bindSocket(outS);
+            relay.setReceiveBufferSize(262144);
+            outS.setReceiveBufferSize(262144);
+            final int rport = relay.getLocalPort();
+            out.write(new byte[] {5, 0, 0, 1, 0, 0, 0, 0, (byte) (rport >> 8), (byte) rport});
+            out.flush();
+            c.setSoTimeout(0);
+
+            final InetAddress clientIp = c.getInetAddress();
+            final InetAddress[] cAddr = new InetAddress[1];
+            final int[] cPort = new int[1];
+
+            // klien -> internet
+            pool.execute(new Runnable() {
+                public void run() {
+                    byte[] buf = new byte[65535];
+                    DatagramPacket p = new DatagramPacket(buf, buf.length);
+                    try {
+                        while (!stopped) {
+                            p.setLength(buf.length);
+                            relay.receive(p);
+                            if (!p.getAddress().equals(clientIp)) continue;
+                            cAddr[0] = p.getAddress();
+                            cPort[0] = p.getPort();
+                            int n = p.getLength();
+                            if (n < 10 || buf[2] != 0) continue; // fragmen tidak didukung
+                            int atyp = buf[3];
+                            int o;
+                            InetAddress dst;
+                            if (atyp == 1) {
+                                dst = InetAddress.getByAddress(java.util.Arrays.copyOfRange(buf, 4, 8));
+                                o = 8;
+                            } else if (atyp == 4) {
+                                if (n < 22) continue;
+                                dst = InetAddress.getByAddress(java.util.Arrays.copyOfRange(buf, 4, 20));
+                                o = 20;
+                            } else if (atyp == 3) {
+                                int l = buf[4] & 255;
+                                if (n < 7 + l) continue;
+                                dst = resolve(new String(buf, 5, l, "UTF-8"))[0];
+                                o = 5 + l;
+                            } else {
+                                continue;
+                            }
+                            int dp = ((buf[o] & 255) << 8) | (buf[o + 1] & 255);
+                            o += 2;
+                            if (n - o <= 0) continue;
+                            outS.send(new DatagramPacket(buf, o, n - o, dst, dp));
+                            ProxyService.upBytes.addAndGet(n - o);
+                        }
+                    } catch (Exception e) {
+                        // ditutup
+                    }
+                }
+            });
+
+            // internet -> klien
+            pool.execute(new Runnable() {
+                public void run() {
+                    byte[] buf = new byte[65535];
+                    DatagramPacket p = new DatagramPacket(buf, 22, buf.length - 22);
+                    try {
+                        while (!stopped) {
+                            p.setData(buf, 22, buf.length - 22);
+                            outS.receive(p);
+                            InetAddress ca = cAddr[0];
+                            if (ca == null) continue;
+                            byte[] a = p.getAddress().getAddress();
+                            int n = p.getLength();
+                            int hl = (a.length == 4) ? 10 : 22;
+                            int st = 22 - hl;
+                            buf[st] = 0;
+                            buf[st + 1] = 0;
+                            buf[st + 2] = 0;
+                            buf[st + 3] = (byte) (a.length == 4 ? 1 : 4);
+                            System.arraycopy(a, 0, buf, st + 4, a.length);
+                            buf[st + 4 + a.length] = (byte) (p.getPort() >> 8);
+                            buf[st + 5 + a.length] = (byte) p.getPort();
+                            relay.send(new DatagramPacket(buf, st, hl + n, ca, cPort[0]));
+                            ProxyService.downBytes.addAndGet(n);
+                        }
+                    } catch (Exception e) {
+                        // ditutup
+                    }
+                }
+            });
+
+            // tahan sampai klien menutup TCP kontrol
+            InputStream in = c.getInputStream();
+            byte[] sink = new byte[64];
+            while (in.read(sink) >= 0) {
+            }
+        } finally {
+            try {
+                relay.close();
+            } catch (Exception e) {
+            }
+            try {
+                outS.close();
+            } catch (Exception e) {
+            }
+        }
+    }
+
+    // ---------------- DNS cache (hemat 1 lookup per koneksi baru) ----------------
+
+    private final java.util.concurrent.ConcurrentHashMap<String, Object[]> dns =
+            new java.util.concurrent.ConcurrentHashMap<String, Object[]>();
+
+    private InetAddress[] resolve(String host) throws IOException {
+        long now = System.currentTimeMillis();
+        Object[] e = dns.get(host);
+        if (e != null && ((Long) e[0]).longValue() > now) return (InetAddress[]) e[1];
+        Network net = ProxyService.cellular;
+        InetAddress[] addrs = (net != null) ? net.getAllByName(host) : InetAddress.getAllByName(host);
+        // IPv4 dulu (jaringan seluler sering tanpa IPv6 -> hindari timeout 8 detik)
+        InetAddress[] sorted = new InetAddress[addrs.length];
+        int k = 0;
+        for (int i = 0; i < addrs.length; i++) if (addrs[i].getAddress().length == 4) sorted[k++] = addrs[i];
+        for (int i = 0; i < addrs.length; i++) if (addrs[i].getAddress().length != 4) sorted[k++] = addrs[i];
+        if (dns.size() > 512) dns.clear();
+        dns.put(host, new Object[] {Long.valueOf(now + 30000), sorted});
+        return sorted;
+    }
+
     private Socket connect(String host, int dport) throws IOException {
         Network net = ProxyService.cellular;
-        InetAddress[] addrs;
-        if (net != null) {
-            addrs = net.getAllByName(host);
-        } else {
-            addrs = InetAddress.getAllByName(host);
-        }
+        InetAddress[] addrs = resolve(host);
         IOException last = null;
         for (int i = 0; i < addrs.length; i++) {
             Socket s = new Socket();
