@@ -1,7 +1,7 @@
 ; Installer StarDevNett untuk Windows (Inno Setup 6)
 ; Dibangun oleh GitHub Actions: lihat .github/workflows/windows.yml
 #ifndef AppVersion
-  #define AppVersion "1.4"
+  #define AppVersion "1.5"
 #endif
 
 [Setup]

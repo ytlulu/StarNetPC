@@ -53,7 +53,7 @@ jobs:
       - name: Bangun installer
         shell: pwsh
         run: |
-          $ver = "1.4." + $env:GITHUB_RUN_NUMBER
+          $ver = "1.5." + $env:GITHUB_RUN_NUMBER
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$ver" installer.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC gagal" }
 

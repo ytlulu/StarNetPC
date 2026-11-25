@@ -21,6 +21,9 @@ import java.util.concurrent.Executors;
 /** SOCKS5 (CONNECT only) - koneksi keluar di-bind ke jaringan seluler. */
 public class Socks5Server {
 
+    /** Ukuran buffer socket (byte) — tetap maksimal untuk kecepatan. */
+    private static final int BUF = 262144;
+
     private final int port;
     private final String user;
     private final String pass;
@@ -230,7 +233,6 @@ public class Socks5Server {
                             int dp = ((buf[o] & 255) << 8) | (buf[o + 1] & 255);
                             o += 2;
                             if (n - o <= 0) continue;
-                            Modes.up.acquire(n - o);
                             outS.send(new DatagramPacket(buf, o, n - o, dst, dp));
                             ProxyService.upBytes.addAndGet(n - o);
                         }
@@ -262,7 +264,6 @@ public class Socks5Server {
                             System.arraycopy(a, 0, buf, st + 4, a.length);
                             buf[st + 4 + a.length] = (byte) (p.getPort() >> 8);
                             buf[st + 5 + a.length] = (byte) p.getPort();
-                            Modes.down.acquire(n);
                             relay.send(new DatagramPacket(buf, st, hl + n, ca, cPort[0]));
                             ProxyService.downBytes.addAndGet(n);
                         }
@@ -319,8 +320,8 @@ public class Socks5Server {
             try {
                 if (net != null) net.bindSocket(s);
                 s.setTcpNoDelay(true);
-                s.setReceiveBufferSize(Modes.bufSize());
-                s.setSendBufferSize(Modes.bufSize());
+                s.setReceiveBufferSize(BUF);
+                s.setSendBufferSize(BUF);
                 s.connect(new InetSocketAddress(addrs[i], dport), 8000);
                 return s;
             } catch (IOException e) {
@@ -349,8 +350,6 @@ public class Socks5Server {
                 OutputStream o = to.getOutputStream();
                 int n;
                 while ((n = i.read(buf)) > 0) {
-                    if (down) Modes.down.acquire(n);
-                    else Modes.up.acquire(n);
                     o.write(buf, 0, n);
                     if (down) ProxyService.downBytes.addAndGet(n);
                     else ProxyService.upBytes.addAndGet(n);

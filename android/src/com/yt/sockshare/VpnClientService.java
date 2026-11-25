@@ -130,36 +130,24 @@ public class VpnClientService extends VpnService {
         return START_NOT_STICKY;
     }
 
-    public static void applyModeNow() {
-        VpnClientService x = inst;
-        if (x != null) x.applyMode();
-    }
-
+    /** Wake lock + WiFi lock latensi rendah selalu aktif selama sesi. */
     private synchronized void applyMode() {
         try {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            if (Modes.wantWakeLock()) {
-                if (wl == null) wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "starnett:vpn");
-                if (!wl.isHeld()) wl.acquire();
-            } else if (wl != null && wl.isHeld()) {
-                wl.release();
+            if (wl == null) wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "starnett:vpn");
+            if (!wl.isHeld()) wl.acquire();
+            if (wfl == null) {
+                WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                int m = Build.VERSION.SDK_INT >= 29 ? 4 : WifiManager.WIFI_MODE_FULL_HIGH_PERF; // 4 = low latency
+                wfl = wm.createWifiLock(m, "starnett:wifi");
             }
-            if (Modes.wantWifiLock()) {
-                if (wfl == null) {
-                    WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-                    int m = Build.VERSION.SDK_INT >= 29 ? 4 : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
-                    wfl = wm.createWifiLock(m, "starnett:wifi");
-                }
-                if (!wfl.isHeld()) wfl.acquire();
-            } else if (wfl != null && wfl.isHeld()) {
-                wfl.release();
-            }
+            if (!wfl.isHeld()) wfl.acquire();
         } catch (Exception e) {
-            lastError = "mode: " + e.getMessage();
+            lastError = "kunci: " + e.getMessage();
         }
     }
 
-    // Ticker: ping ke HP sumber & internet (via HP sumber), notifikasi hidup, batas baterai mode Hemat
+    // Ticker: ping ke HP sumber & internet (via HP sumber), notifikasi hidup
     private void startTicker() {
         pool.execute(new Runnable() {
             public void run() {
@@ -213,28 +201,9 @@ public class VpnClientService extends VpnService {
                     nm.notify(2, notif());
                 } catch (Exception e) {
                 }
-                if (Modes.get() == Modes.HEMAT && batteryLow()) {
-                    lastError = "Berhenti otomatis: baterai di bawah " + Modes.HEMAT_BATTERY_STOP + "% (mode Hemat).";
-                    requestStop();
-                    return;
-                }
                 hd.postDelayed(this, 2000);
             }
         }, 2000);
-    }
-
-    private boolean batteryLow() {
-        try {
-            Intent b = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-            if (b == null) return false;
-            int lvl = b.getIntExtra("level", -1);
-            int sc = b.getIntExtra("scale", 100);
-            int status = b.getIntExtra("status", -1);
-            boolean charging = status == 2 || status == 5;
-            return !charging && lvl >= 0 && (lvl * 100 / sc) < Modes.HEMAT_BATTERY_STOP;
-        } catch (Exception e) {
-            return false;
-        }
     }
 
     private Notification notif() {
@@ -251,7 +220,7 @@ public class VpnClientService extends VpnService {
                 + "  \u00b7  " + Ping.text(pingNet.avg());
         String line2 = "Lewat " + srvHost + ":" + srvPort + "  \u00b7  HP " + Ping.text(pingHop.avg())
                 + "\nTotal " + Fmt.size(upBytes.get() + downBytes.get()) + "  \u00b7  " + flowsN.get() + " koneksi";
-        b.setContentTitle("StarNett terhubung \u00b7 " + Modes.name(Modes.get()))
+        b.setContentTitle("StarNett terhubung")
                 .setContentText(line1)
                 .setStyle(new Notification.BigTextStyle().bigText(line1 + "\n" + line2))
                 .setSmallIcon(android.R.drawable.stat_sys_download)
@@ -414,7 +383,6 @@ public class VpnClientService extends VpnService {
                             break;
                         }
                         o.write(d);
-                        Modes.up.acquire(d.length);
                         upBytes.addAndGet(d.length);
                     }
                     synchronized (f) {
@@ -433,7 +401,6 @@ public class VpnClientService extends VpnService {
             int n;
             while ((n = in.read(buf)) >= 0) {
                 if (n == 0) continue;
-                Modes.down.acquire(n);
                 int off = 0;
                 while (off < n) {
                     int len = Math.min(MSS, n - off);

@@ -128,37 +128,24 @@ public class ProxyService extends Service {
         }
     }
 
-    /** Terapkan wake lock / WiFi lock sesuai mode (dipanggil saat start & ganti mode). */
-    public static void applyModeNow() {
-        ProxyService x = inst;
-        if (x != null) x.applyMode();
-    }
-
+    /** Wake lock + WiFi lock latensi rendah selalu aktif selama berbagi. */
     private synchronized void applyMode() {
         try {
             PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-            if (Modes.wantWakeLock()) {
-                if (wl == null) wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "starnett:proxy");
-                if (!wl.isHeld()) wl.acquire();
-            } else if (wl != null && wl.isHeld()) {
-                wl.release();
+            if (wl == null) wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "starnett:proxy");
+            if (!wl.isHeld()) wl.acquire();
+            if (wfl == null) {
+                WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                int m = Build.VERSION.SDK_INT >= 29 ? 4 : WifiManager.WIFI_MODE_FULL_HIGH_PERF; // 4 = low latency
+                wfl = wm.createWifiLock(m, "starnett:wifi");
             }
-            if (Modes.wantWifiLock()) {
-                if (wfl == null) {
-                    WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-                    int m = Build.VERSION.SDK_INT >= 29 ? 4 : WifiManager.WIFI_MODE_FULL_HIGH_PERF; // 4 = low latency
-                    wfl = wm.createWifiLock(m, "starnett:wifi");
-                }
-                if (!wfl.isHeld()) wfl.acquire();
-            } else if (wfl != null && wfl.isHeld()) {
-                wfl.release();
-            }
+            if (!wfl.isHeld()) wfl.acquire();
         } catch (Exception e) {
-            lastError = "mode: " + e.getMessage();
+            lastError = "kunci: " + e.getMessage();
         }
     }
 
-    // Ticker: ping internet (seluler), nama perangkat, notifikasi hidup, batas baterai mode Hemat
+    // Ticker: ping internet (seluler), nama perangkat, notifikasi hidup
     private void startTicker() {
         final Thread pt = new Thread(new Runnable() {
             public void run() {
@@ -195,28 +182,9 @@ public class ProxyService extends Service {
                 meter.update(upBytes.get(), downBytes.get());
                 refreshClients();
                 updateNotification();
-                if (Modes.get() == Modes.HEMAT && batteryLow()) {
-                    lastError = "Berhenti otomatis: baterai di bawah " + Modes.HEMAT_BATTERY_STOP + "% (mode Hemat).";
-                    cleanup(true);
-                    return;
-                }
                 hd.postDelayed(this, 2000);
             }
         }, 2000);
-    }
-
-    private boolean batteryLow() {
-        try {
-            Intent b = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-            if (b == null) return false;
-            int lvl = b.getIntExtra("level", -1);
-            int sc = b.getIntExtra("scale", 100);
-            int status = b.getIntExtra("status", -1);
-            boolean charging = status == 2 || status == 5; // CHARGING / FULL
-            return !charging && lvl >= 0 && (lvl * 100 / sc) < Modes.HEMAT_BATTERY_STOP;
-        } catch (Exception e) {
-            return false;
-        }
     }
 
     private void refreshClients() {
@@ -272,7 +240,7 @@ public class ProxyService extends Service {
                 + "  \u00b7  " + Ping.text(ping.avg());
         String line2 = (clientCount > 0 ? clientCount + " perangkat: " + clients : "Menunggu perangkat tersambung")
                 + "\nTotal " + Fmt.size(upBytes.get() + downBytes.get()) + "  \u00b7  port " + port;
-        b.setContentTitle("StarNett aktif \u00b7 " + Modes.name(Modes.get()))
+        b.setContentTitle("StarNett aktif")
                 .setContentText(line1)
                 .setStyle(new Notification.BigTextStyle().bigText(line1 + "\n" + line2))
                 .setSmallIcon(android.R.drawable.stat_sys_upload)

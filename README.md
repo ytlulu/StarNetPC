@@ -19,15 +19,18 @@ Satu repo, dua output. Push ke GitHub → tab **Actions**:
 
 Push tag `v1.2` (dst.) untuk menaruh keduanya di halaman **Releases**.
 
-## Fitur baru (v1.4)
+## Fitur baru (v1.5) — fokus speed, latensi minim, support
+
+- **Mode Hemat / Seimbang / Speed dihapus.** Semua perangkat selalu jalan di performa penuh: tanpa batas kecepatan,
+  buffer maksimal, wake lock + WiFi lock latensi rendah (Android) aktif otomatis. Tidak ada lagi auto-stop baterai.
+- **Windows serba otomatis.** Kolom IP manual dan pilihan WiFi Direct/USB dihapus. Aplikasi mencari HP sumber sendiri:
+  HP terakhir yang berhasil → WiFi Direct (192.168.49.1) / gateway → kabel USB (adb). Tinggal tekan **SAMBUNG**.
+- Versi 1.5.
+
+## Fitur v1.4
 
 - **Ping (ms)**: HP sumber = latensi internet lewat seluler; HP penerima & Windows = latensi ke HP sumber
   + latensi internet lewat HP sumber, plus jitter. Hijau < 80 ms, kuning < 160 ms, merah di atasnya.
-- **Mode Hemat / Seimbang / Speed** (berlaku untuk perangkat yang dipakai):
-  - *Hemat*: batas ±400 KB/s per arah, buffer kecil, tanpa wake lock; di Android berhenti otomatis jika baterai < 15%.
-  - *Seimbang*: tanpa batas, wake lock aktif.
-  - *Speed*: tanpa batas, buffer maksimal, + WiFi lock mode performa di Android.
-  - Mode Hemat membatasi kecepatan, bukan mengurangi data per byte; pakai batas itu untuk menjaga kuota.
 - **Notifikasi hidup (Android)**: ↓/↑ per detik, ms, total data; HP sumber juga menampilkan nama perangkat yang tersambung.
 - Nama diganti: **StarNett** (nama WiFi Direct bawaan `DIRECT-SS-StarNett`; nama package internal tetap
   `com.yt.sockshare` supaya APK baru bisa menimpa yang lama).
@@ -54,7 +57,7 @@ v1.3** (HP sumber lama menolak UDP). Windows: proxy sistem hanya untuk TCP; UDP 
 1. Install `StarDevNett-Setup.exe` (tanpa admin; dipasang per-user).
 2. HP: **MULAI BAGIKAN**.
 3. PC: sambung WiFi ke `DIRECT-SS-<nama>` **atau** colok USB (USB debugging aktif) → buka StarDevNett →
-   pilih mode → **SAMBUNG**.
+   **SAMBUNG** (HP sumber dicari otomatis).
 
 Port 1080 · user `yt` · password `starnett` (password lama `sockshare` tetap diterima HP sumber) adalah bawaan app HP; bisa diubah di jendela.
 Proxy sistem Windows diatur otomatis dan dikembalikan saat putus/tutup.

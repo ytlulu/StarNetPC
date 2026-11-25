@@ -11,7 +11,7 @@ import relay
 import winnet
 
 APP_NAME = "StarDevNett"
-VERSION = "1.4-win"
+VERSION = "1.5-win"
 
 
 def fmt_size(b):
@@ -104,29 +104,38 @@ class Controller:
         self.running = False
         self.cfg = None
         self.host = ""
+        self.via = "wifi"              # wifi | usb (terdeteksi otomatis)
         self.ping_hop = PingSeries()   # ke HP sumber (WiFi Direct / USB)
         self.ping_net = PingSeries()   # internet lewat HP sumber
         self._up = None
         self._ping_gen = 0
 
     def resolve_host(self, cfg):
-        """Return (host, port) HP sumber."""
-        if cfg["mode"] == "usb":
-            ok, msg = winnet.adb_forward(int(cfg["usb_port"]), int(cfg["port"]))
-            self.log(("USB: " if ok else "USB GAGAL: ") + msg)
-            if not ok:
-                return None, 0
-            return "127.0.0.1", int(cfg["usb_port"])
-        host = (cfg["host"] or "").strip()
-        if host:
-            return host, int(cfg["port"])
+        """Otomatis: HP terakhir -> WiFi Direct/gateway -> kabel USB (adb). Return (host, port)."""
+        port = int(cfg["port"])
+        self.via = "wifi"
         self.log("Mencari HP sumber...")
+        cands = []
+        last = (cfg.get("last_host") or "").strip()
+        if last:
+            cands.append(last)
         for h in winnet.candidate_hosts():
-            if relay.probe(h, cfg["port"], 1.2):
+            if h not in cands:
+                cands.append(h)
+        for h in cands:
+            if relay.probe(h, port, 1.2):
                 self.log("HP sumber ketemu: %s" % h)
-                return h, int(cfg["port"])
-        self.log("HP sumber tidak ketemu. Sambungkan WiFi ke hotspot HP "
-                 "(DIRECT-SS-...) dan pastikan 'MULAI BAGIKAN' aktif di HP.")
+                self._found = h
+                return h, port
+        if winnet.find_adb():
+            ok, msg = winnet.adb_forward(int(cfg["usb_port"]), port)
+            if ok:
+                self.via = "usb"
+                self.log("HP sumber ketemu lewat kabel USB.")
+                self._found = ""
+                return "127.0.0.1", int(cfg["usb_port"])
+        self.log("HP sumber tidak ketemu. Sambungkan WiFi ke hotspot HP (DIRECT-SS-...) "
+                 "atau colok kabel USB (USB debugging aktif), dan pastikan 'MULAI BAGIKAN' aktif di HP.")
         return None, 0
 
     def start(self, cfg):
@@ -154,13 +163,12 @@ class Controller:
             self.log("Tes ke HP gagal: %s" % msg)
             if "password" in msg or "auth" in msg:
                 self.log("Cek username/password SOCKS (bawaan: yt / starnett).")
-            elif cfg["mode"] == "usb":
+            elif self.via == "usb":
                 self.log("Pastikan 'MULAI BAGIKAN' aktif di HP dan USB debugging menyala.")
             return False
         self.log("Tes OK lewat HP (%s, %d ms)" % (msg, ms))
         self.stats = relay.Stats()
         self.relay = relay.Relay(int(cfg["local_port"]), up, self.stats)
-        self.relay.set_mode(cfg.get("perf", "seimbang"))
         try:
             self.relay.start()
         except OSError as e:
@@ -174,6 +182,13 @@ class Controller:
                 self.log("Gagal set proxy sistem: %s" % e)
         self.cfg = cfg
         self.host = "%s:%d" % (host, port)
+        if self.via == "wifi" and getattr(self, "_found", ""):
+            try:
+                c2 = winnet.load_cfg()
+                c2["last_host"] = self._found
+                winnet.save_cfg(c2)
+            except Exception:
+                pass
         self._up = up
         self.running = True
         self.ping_hop.clear()
@@ -182,12 +197,6 @@ class Controller:
         threading.Thread(target=self._ping_loop, args=(self._ping_gen,), daemon=True).start()
         self.log("Tersambung. Relay lokal 127.0.0.1:%s (HTTP + SOCKS5)" % cfg["local_port"])
         return True
-
-    def set_mode(self, name):
-        if self.relay:
-            self.relay.set_mode(name)
-        if self.cfg is not None:
-            self.cfg["perf"] = name
 
     def _ping_loop(self, gen):
         while self.running and gen == self._ping_gen:
@@ -226,7 +235,7 @@ class Controller:
             winnet.restore_system_proxy()
         except Exception:
             pass
-        if self.cfg and self.cfg.get("mode") == "usb":
+        if self.via == "usb" and self.cfg:
             winnet.adb_forward_remove(int(self.cfg["usb_port"]))
         self.log("Terputus. Proxy sistem dikembalikan.")
 
@@ -237,9 +246,6 @@ def run_cli(argv):
     import argparse
     ap = argparse.ArgumentParser(prog=APP_NAME, description="StarDevNett (CLI)")
     ap.add_argument("--cli", action="store_true")
-    ap.add_argument("--mode", choices=["wifi", "usb"])
-    ap.add_argument("--perf", choices=["hemat", "seimbang", "speed"])
-    ap.add_argument("--host")
     ap.add_argument("--port", type=int)
     ap.add_argument("--user")
     ap.add_argument("--password")
@@ -247,9 +253,6 @@ def run_cli(argv):
     ap.add_argument("--no-system-proxy", action="store_true")
     a = ap.parse_args(argv)
     cfg = winnet.load_cfg()
-    if a.mode: cfg["mode"] = a.mode
-    if a.perf: cfg["perf"] = a.perf
-    if a.host: cfg["host"] = a.host
     if a.port: cfg["port"] = a.port
     if a.user is not None: cfg["user"] = a.user
     if a.password is not None: cfg["pass"] = a.password
@@ -288,8 +291,8 @@ def run_gui():
     root = tk.Tk()
     root.title("%s - Berbagi data seluler" % APP_NAME)
     root.configure(bg=BG)
-    root.geometry("470x930")
-    root.minsize(440, 870)
+    root.geometry("470x780")
+    root.minsize(440, 720)
     try:
         root.iconbitmap(resource_path(os.path.join("assets", "icon.ico")))
     except Exception:
@@ -338,24 +341,13 @@ def run_gui():
     c1 = card(root)
     lbl(c1, "SAMBUNG KE HP SUMBER", 9, TXT, True).pack(anchor="w", pady=(0, 8))
 
-    v_mode = tk.StringVar(value=cfg["mode"])
-    mrow = tk.Frame(c1, bg=CARD)
-    mrow.pack(fill="x")
-    for text, val in (("WiFi Direct", "wifi"), ("Kabel USB (adb)", "usb")):
-        tk.Radiobutton(mrow, text=text, value=val, variable=v_mode, bg=CARD, fg=TXT,
-                       selectcolor="#1F2630", activebackground=CARD, activeforeground=TXT,
-                       font=("Segoe UI", 10), command=lambda: on_mode()).pack(side="left", padx=(0, 16))
-
-    v_host = tk.StringVar(value=cfg["host"])
     v_port = tk.StringVar(value=str(cfg["port"]))
     v_user = tk.StringVar(value=cfg["user"])
     v_pass = tk.StringVar(value=cfg["pass"])
     v_local = tk.StringVar(value=str(cfg["local_port"]))
     v_sys = tk.BooleanVar(value=bool(cfg["set_proxy"]))
 
-    lbl(c1, "IP HP sumber (kosongkan = otomatis)", 9).pack(anchor="w", pady=(10, 2))
-    e_host = entry(c1, v_host)
-    e_host.pack(fill="x", ipady=4)
+    lbl(c1, "HP sumber dicari otomatis (WiFi Direct atau kabel USB).", 9).pack(anchor="w", pady=(0, 2))
 
     row = tk.Frame(c1, bg=CARD)
     row.pack(fill="x", pady=(10, 0))
@@ -379,33 +371,6 @@ def run_gui():
                    wraplength=400, justify="left").pack(anchor="w", pady=(8, 0))
     lbl(c2, "Aplikasi yang tidak ikut proxy sistem: set manual SOCKS5 127.0.0.1:port lokal "
             "(tanpa login).", 8, wraplength=410, justify="left").pack(anchor="w", pady=(6, 0))
-
-    # ---- kartu mode ----
-    c3 = card(root)
-    lbl(c3, "MODE", 9, TXT, True).pack(anchor="w", pady=(0, 6))
-    v_perf = tk.StringVar(value=cfg.get("perf", "seimbang"))
-    prow = tk.Frame(c3, bg=CARD)
-    prow.pack(fill="x")
-    MODE_DESC = {
-        "hemat": "Batas \u00b1400 KB/s per arah, buffer kecil. Hemat kuota & baterai HP.",
-        "seimbang": "Tanpa batas, buffer standar. Pilihan sehari-hari.",
-        "speed": "Tanpa batas, buffer maksimal. Cocok untuk unduhan besar.",
-    }
-    tv_mode_desc = lbl(c3, MODE_DESC.get(v_perf.get(), ""), 8, wraplength=410, justify="left")
-
-    def on_perf():
-        m = v_perf.get()
-        tv_mode_desc.config(text=MODE_DESC.get(m, ""))
-        ctl.set_mode(m)
-        c = read_cfg(silent=True)
-        if c:
-            winnet.save_cfg(c)
-
-    for text, val in (("Hemat", "hemat"), ("Seimbang", "seimbang"), ("Speed", "speed")):
-        tk.Radiobutton(prow, text=text, value=val, variable=v_perf, bg=CARD, fg=TXT,
-                       selectcolor="#1F2630", activebackground=CARD, activeforeground=TXT,
-                       font=("Segoe UI", 10), command=on_perf).pack(side="left", padx=(0, 16))
-    tv_mode_desc.pack(anchor="w", pady=(6, 0))
 
     # ---- tombol ----
     bt = tk.Frame(root, bg=BG)
@@ -463,16 +428,10 @@ def run_gui():
         logbox.see("end")
         logbox.config(state="disabled")
 
-    def on_mode():
-        usb = v_mode.get() == "usb"
-        e_host.config(state="disabled" if usb else "normal")
-
     def read_cfg(silent=False):
         try:
             c = {
-                "mode": v_mode.get(),
-                "perf": v_perf.get(),
-                "host": v_host.get().strip(),
+                "last_host": winnet.load_cfg().get("last_host", ""),
                 "port": int(v_port.get()),
                 "user": v_user.get(),
                 "pass": v_pass.get(),
@@ -583,8 +542,7 @@ def run_gui():
             root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)
-    on_mode()
-    log("%s %s siap. Sambungkan WiFi ke hotspot HP (DIRECT-SS-...) lalu tekan SAMBUNG." % (APP_NAME, VERSION))
+    log("%s %s siap. Sambungkan WiFi ke hotspot HP (DIRECT-SS-...) lalu tekan SAMBUNG (atau cukup colok USB)." % (APP_NAME, VERSION))
     if winnet.proxy_dirty():
         try:
             winnet.restore_system_proxy()

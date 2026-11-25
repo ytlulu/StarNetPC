@@ -46,8 +46,7 @@ public class MainActivity extends Activity {
     private SharedPreferences sp;
     private TextView tv;
     private TextView tvConnVal, tvTotalVal;
-    private TextView tvPingVal, tvPingSub, tvModeDesc;
-    private final Button[] modeBtn = new Button[3];
+    private TextView tvPingVal, tvPingSub;
     private TextView tvDownVal, tvDownSub, tvUpVal, tvUpSub;
     private final Meter meter = new Meter();
     private boolean wasActive = false;
@@ -63,7 +62,6 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
-        Modes.set(sp().getInt("mode", Modes.SEIMBANG));
         float density = getResources().getDisplayMetrics().density;
         int pad = (int) (20 * density);
 
@@ -235,34 +233,11 @@ public class MainActivity extends Activity {
         content.addView(statPing);
         content.addView(gap(density, 12));
 
-        // --- mode: Hemat / Seimbang / Speed ---
-        content.addView(sectionLabel("MODE", density));
-        LinearLayout modeRow = new LinearLayout(this);
-        modeRow.setOrientation(LinearLayout.HORIZONTAL);
-        String[] modeNames = new String[] {"Hemat", "Seimbang", "Speed"};
-        for (int i = 0; i < 3; i++) {
-            final int mi = i;
-            modeBtn[i] = ghostButton(this, modeNames[i], density);
-            modeBtn[i].setOnClickListener(new View.OnClickListener() {
-                public void onClick(View v) {
-                    setMode(mi);
-                }
-            });
-            LinearLayout.LayoutParams lpm = new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            if (i > 0) lpm.leftMargin = (int) (8 * density);
-            modeRow.addView(modeBtn[i], lpm);
-        }
-        content.addView(modeRow);
-        tvModeDesc = statSub("", density);
-        content.addView(tvModeDesc);
-        content.addView(gap(density, 12));
-
         // --- kartu PC / Laptop ---
         LinearLayout cardPc = card(density);
         cardPc.addView(sectionLabel("SAMBUNGKAN KE PC / LAPTOP", density));
         TextView pcHint = new TextView(this);
-        pcHint.setText("Pasang StarDevNett untuk Windows, lalu pilih WiFi Direct (sambung ke hotspot di atas) atau Kabel USB (aktifkan USB Debugging) dan tekan SAMBUNG.");
+        pcHint.setText("Pasang StarDevNett untuk Windows, sambung WiFi ke hotspot di atas atau colok kabel USB (USB Debugging aktif), lalu tekan SAMBUNG. HP ini dicari otomatis.");
         pcHint.setTextColor(TEXT_MUTED);
         pcHint.setTextSize(12);
         pcHint.setLineSpacing((int) (3 * density), 1f);
@@ -313,35 +288,6 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         sp = sp();
-        updateModeButtons();
-    }
-
-    private void setMode(int m) {
-        Modes.set(m);
-        sp().edit().putInt("mode", m).apply();
-        ProxyService.applyModeNow();
-        VpnClientService.applyModeNow();
-        updateModeButtons();
-    }
-
-    private void updateModeButtons() {
-        int m = Modes.get();
-        for (int i = 0; i < 3; i++) {
-            if (modeBtn[i] == null) continue;
-            boolean sel = (i == m);
-            modeBtn[i].setTextColor(sel ? ACCENT_TEXT : TEXT_MAIN);
-            modeBtn[i].setBackground(sel
-                    ? roundedDrawable(ACCENT, 0, (int) (12 * getResources().getDisplayMetrics().density))
-                    : roundedDrawable(GHOST_BG, GHOST_STROKE, (int) (12 * getResources().getDisplayMetrics().density)));
-        }
-        if (tvModeDesc != null) {
-            tvModeDesc.setText(m == Modes.HEMAT
-                    ? "Batas \u00b1" + (Modes.HEMAT_RATE / 1024) + " KB/s per arah, tanpa wake lock, berhenti otomatis jika baterai < "
-                            + Modes.HEMAT_BATTERY_STOP + "%."
-                    : (m == Modes.SPEED
-                            ? "Tanpa batas, WiFi mode performa + wake lock, buffer maksimal. Cocok untuk voice & game."
-                            : "Tanpa batas, wake lock aktif. Pilihan sehari-hari."));
-        }
     }
 
     private int levelColor(int lv) {

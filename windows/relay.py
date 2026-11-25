@@ -38,34 +38,8 @@ class Stats:
                 self.total += d
 
 
-class Limiter:
-    """Pembatas kecepatan (byte/detik) bersama antar thread. rate <= 0 = tanpa batas."""
-
-    def __init__(self):
-        self.rate = 0
-        self._next = 0.0
-        self._lock = threading.Lock()
-
-    def acquire(self, n):
-        r = self.rate
-        if r <= 0 or n <= 0:
-            return
-        with self._lock:
-            now = time.monotonic()
-            if self._next < now - 0.1:
-                self._next = now - 0.1
-            self._next += n / float(r)
-            wait = self._next - now
-        if wait > 0.002:
-            time.sleep(min(wait, 1.5))
-
-
-# mode kinerja: batas per arah (byte/detik) & ukuran buffer baca
-MODES = {
-    "hemat": {"rate": 400 * 1024, "buf": 16384},
-    "seimbang": {"rate": 0, "buf": 65536},
-    "speed": {"rate": 0, "buf": 262144},
-}
+# buffer baca maksimal untuk kecepatan (tanpa batas, tanpa mode)
+BUFSIZE = 262144
 
 
 class Upstream:
@@ -148,13 +122,11 @@ def socks5_connect(up, host, port, timeout=10):
 
 
 def _pump(a, b, stats, down, rl):
-    lim = rl.down_lim if down else rl.up_lim
     try:
         while True:
-            data = a.recv(rl.bufsize)
+            data = a.recv(BUFSIZE)
             if not data:
                 break
-            lim.acquire(len(data))
             b.sendall(data)
             stats.add_bytes(len(data), down)
     except OSError:
@@ -199,17 +171,6 @@ class Relay:
         self._stop = False
         self._socks = set()
         self._lock = threading.Lock()
-        self.up_lim = Limiter()
-        self.down_lim = Limiter()
-        self.bufsize = 65536
-        self.set_mode("seimbang")
-
-    def set_mode(self, name):
-        m = MODES.get(name, MODES["seimbang"])
-        self.up_lim.rate = m["rate"]
-        self.down_lim.rate = m["rate"]
-        self.bufsize = m["buf"]
-        self.mode = name
 
     # ---- lifecycle ----
     def start(self):

@@ -12,12 +12,10 @@ BACKUP = os.path.join(APPDIR, "proxy_backup.json")
 NOWIN = 0x08000000 if IS_WIN else 0  # CREATE_NO_WINDOW
 
 DEFAULTS = {
-    "mode": "wifi",          # wifi | usb
-    "host": "",              # kosong = deteksi otomatis
+    "last_host": "",         # HP sumber terakhir yang berhasil (dicoba duluan)
     "port": 1080,
     "user": "yt",
     "pass": "starnett",
-    "perf": "seimbang",      # hemat | seimbang | speed
     "local_port": 10808,
     "set_proxy": True,
     "usb_port": 11080,
