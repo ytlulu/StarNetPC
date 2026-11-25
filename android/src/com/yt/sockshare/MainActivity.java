@@ -46,6 +46,8 @@ public class MainActivity extends Activity {
     private SharedPreferences sp;
     private TextView tv;
     private TextView tvConnVal, tvTotalVal;
+    private TextView tvPingVal, tvPingSub, tvModeDesc;
+    private final Button[] modeBtn = new Button[3];
     private TextView tvDownVal, tvDownSub, tvUpVal, tvUpSub;
     private final Meter meter = new Meter();
     private boolean wasActive = false;
@@ -61,6 +63,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Modes.set(sp().getInt("mode", Modes.SEIMBANG));
         float density = getResources().getDisplayMetrics().density;
         int pad = (int) (20 * density);
 
@@ -137,7 +140,7 @@ public class MainActivity extends Activity {
         cardShare.addView(etName);
         cardShare.addView(gap(density, 10));
         cardShare.addView(fieldLabel("Password", density));
-        etPass = field(this, sp(), "wpass", "sockshare123", density, true);
+        etPass = field(this, sp(), "wpass", "starnett123", density, true);
         cardShare.addView(etPass);
         cardShare.addView(gap(density, 14));
         btnS = primaryButton(this, "MULAI BAGIKAN", density);
@@ -220,6 +223,39 @@ public class MainActivity extends Activity {
         statsRow.addView(statTotal, lpTotal);
 
         content.addView(statsRow);
+        content.addView(gap(density, 10));
+
+        // --- kartu ping (ms) ---
+        LinearLayout statPing = statCard(density);
+        statPing.addView(statTitle("Ping", density));
+        tvPingVal = statValue("-- ms", density);
+        statPing.addView(tvPingVal);
+        tvPingSub = statSub("Belum tersambung", density);
+        statPing.addView(tvPingSub);
+        content.addView(statPing);
+        content.addView(gap(density, 12));
+
+        // --- mode: Hemat / Seimbang / Speed ---
+        content.addView(sectionLabel("MODE", density));
+        LinearLayout modeRow = new LinearLayout(this);
+        modeRow.setOrientation(LinearLayout.HORIZONTAL);
+        String[] modeNames = new String[] {"Hemat", "Seimbang", "Speed"};
+        for (int i = 0; i < 3; i++) {
+            final int mi = i;
+            modeBtn[i] = ghostButton(this, modeNames[i], density);
+            modeBtn[i].setOnClickListener(new View.OnClickListener() {
+                public void onClick(View v) {
+                    setMode(mi);
+                }
+            });
+            LinearLayout.LayoutParams lpm = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) lpm.leftMargin = (int) (8 * density);
+            modeRow.addView(modeBtn[i], lpm);
+        }
+        content.addView(modeRow);
+        tvModeDesc = statSub("", density);
+        content.addView(tvModeDesc);
         content.addView(gap(density, 12));
 
         // --- kartu PC / Laptop ---
@@ -237,7 +273,7 @@ public class MainActivity extends Activity {
         pcInfoRow.setOrientation(LinearLayout.HORIZONTAL);
         pcInfoRow.setGravity(Gravity.CENTER_VERTICAL);
         final TextView pcInfo = new TextView(this);
-        pcInfo.setText("Port 1080  \u00b7  yt / sockshare");
+        pcInfo.setText("Port 1080  \u00b7  yt / starnett");
         pcInfo.setTextColor(TEXT_MAIN);
         pcInfo.setTextSize(13);
         pcInfo.setTypeface(pcInfo.getTypeface(), android.graphics.Typeface.BOLD);
@@ -277,6 +313,42 @@ public class MainActivity extends Activity {
         setContentView(root);
 
         sp = sp();
+        updateModeButtons();
+    }
+
+    private void setMode(int m) {
+        Modes.set(m);
+        sp().edit().putInt("mode", m).apply();
+        ProxyService.applyModeNow();
+        VpnClientService.applyModeNow();
+        updateModeButtons();
+    }
+
+    private void updateModeButtons() {
+        int m = Modes.get();
+        for (int i = 0; i < 3; i++) {
+            if (modeBtn[i] == null) continue;
+            boolean sel = (i == m);
+            modeBtn[i].setTextColor(sel ? ACCENT_TEXT : TEXT_MAIN);
+            modeBtn[i].setBackground(sel
+                    ? roundedDrawable(ACCENT, 0, (int) (12 * getResources().getDisplayMetrics().density))
+                    : roundedDrawable(GHOST_BG, GHOST_STROKE, (int) (12 * getResources().getDisplayMetrics().density)));
+        }
+        if (tvModeDesc != null) {
+            tvModeDesc.setText(m == Modes.HEMAT
+                    ? "Batas \u00b1" + (Modes.HEMAT_RATE / 1024) + " KB/s per arah, tanpa wake lock, berhenti otomatis jika baterai < "
+                            + Modes.HEMAT_BATTERY_STOP + "%."
+                    : (m == Modes.SPEED
+                            ? "Tanpa batas, WiFi mode performa + wake lock, buffer maksimal. Cocok untuk voice & game."
+                            : "Tanpa batas, wake lock aktif. Pilihan sehari-hari."));
+        }
+    }
+
+    private int levelColor(int lv) {
+        if (lv == 0) return Color.parseColor("#5FD08A");
+        if (lv == 1) return ACCENT;
+        if (lv == 2) return Color.parseColor("#FF6B6B");
+        return TEXT_MAIN;
     }
 
     private SharedPreferences sp() {
@@ -420,7 +492,7 @@ public class MainActivity extends Activity {
         String g = gateway();
         String host = (g != null) ? g : "192.168.49.1";
         String text = "Host: " + host + " (atau 127.0.0.1 kalau via USB/ADB forward)\n"
-                + "Port: 1080\nUser: yt\nPass: sockshare";
+                + "Port: 1080\nUser: yt\nPass: starnett";
         android.content.ClipboardManager cm =
                 (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         cm.setPrimaryClip(android.content.ClipData.newPlainText("StarDevNett PC info", text));
@@ -558,6 +630,24 @@ public class MainActivity extends Activity {
         tvUpVal.setText(Fmt.speed(meter.upSpeed));
         tvUpSub.setText("Total " + Fmt.size(shownUp));
         tvTotalVal.setText(Fmt.size(shownUp + shownDown));
+
+        if (active) {
+            Ping pn = von ? VpnClientService.pingNet : ProxyService.ping;
+            int a = pn.avg();
+            tvPingVal.setText(Ping.text(a));
+            tvPingVal.setTextColor(levelColor(Ping.level(a)));
+            if (von) {
+                tvPingSub.setText("HP sumber " + Ping.text(VpnClientService.pingHop.avg())
+                        + "  \u00b7  internet " + Ping.text(a) + "  \u00b7  jitter " + pn.jitter() + " ms");
+            } else {
+                tvPingSub.setText("Internet via seluler  \u00b7  jitter " + pn.jitter() + " ms  \u00b7  "
+                        + (ProxyService.clientCount > 0 ? ProxyService.clientCount + " perangkat" : "belum ada perangkat"));
+            }
+        } else {
+            tvPingVal.setText("-- ms");
+            tvPingVal.setTextColor(TEXT_MAIN);
+            tvPingSub.setText("Belum tersambung");
+        }
 
         StringBuilder s = new StringBuilder();
         s.append("SHARE: ").append(on ? "AKTIF" : "mati").append('\n');

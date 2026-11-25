@@ -17,6 +17,11 @@ import android.system.OsConstants;
 import android.system.StructPollfd;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
+import android.net.wifi.WifiManager;
+import android.content.IntentFilter;
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.FileInputStream;
@@ -67,6 +72,12 @@ public class VpnClientService extends VpnService {
     private ConnectivityManager cm;
     private ConnectivityManager.NetworkCallback wcb;
     private volatile Network wifi = null;
+    private final Handler hd = new Handler(Looper.getMainLooper());
+    private final Meter meter = new Meter();
+    private PowerManager.WakeLock wl;
+    private WifiManager.WifiLock wfl;
+    public static final Ping pingHop = new Ping(); // latensi ke HP sumber (WiFi Direct)
+    public static final Ping pingNet = new Ping(); // latensi internet via HP sumber
 
     @Override
     public int onStartCommand(Intent it, int fl, int id) {
@@ -84,7 +95,7 @@ public class VpnClientService extends VpnService {
 
         try {
             VpnService.Builder b = new VpnService.Builder();
-            b.setSession("SockShare")
+            b.setSession("StarNett")
                     .addAddress("10.8.0.2", 24)
                     .addRoute("0.0.0.0", 0)
                     .addDnsServer("8.8.8.8")
@@ -106,13 +117,124 @@ public class VpnClientService extends VpnService {
         tunOut = new FileOutputStream(pfd.getFileDescriptor());
         running = true;
         inst = this;
+        pingHop.reset();
+        pingNet.reset();
+        applyMode();
         requestWifi();
+        startTicker();
         pool.execute(new Runnable() {
             public void run() {
                 loop();
             }
         });
         return START_NOT_STICKY;
+    }
+
+    public static void applyModeNow() {
+        VpnClientService x = inst;
+        if (x != null) x.applyMode();
+    }
+
+    private synchronized void applyMode() {
+        try {
+            PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+            if (Modes.wantWakeLock()) {
+                if (wl == null) wl = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "starnett:vpn");
+                if (!wl.isHeld()) wl.acquire();
+            } else if (wl != null && wl.isHeld()) {
+                wl.release();
+            }
+            if (Modes.wantWifiLock()) {
+                if (wfl == null) {
+                    WifiManager wm = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                    int m = Build.VERSION.SDK_INT >= 29 ? 4 : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+                    wfl = wm.createWifiLock(m, "starnett:wifi");
+                }
+                if (!wfl.isHeld()) wfl.acquire();
+            } else if (wfl != null && wfl.isHeld()) {
+                wfl.release();
+            }
+        } catch (Exception e) {
+            lastError = "mode: " + e.getMessage();
+        }
+    }
+
+    // Ticker: ping ke HP sumber & internet (via HP sumber), notifikasi hidup, batas baterai mode Hemat
+    private void startTicker() {
+        pool.execute(new Runnable() {
+            public void run() {
+                while (!stop) {
+                    // 1) HP sumber: waktu TCP connect lewat WiFi Direct
+                    int hop = -1;
+                    Socket s = new Socket();
+                    try {
+                        Network wn = wifi;
+                        if (wn != null) wn.bindSocket(s);
+                        long t0 = System.nanoTime();
+                        s.connect(new InetSocketAddress(srvHost, srvPort), 3000);
+                        hop = (int) ((System.nanoTime() - t0) / 1000000L);
+                    } catch (Exception e) {
+                    } finally {
+                        try {
+                            s.close();
+                        } catch (Exception e) {
+                        }
+                    }
+                    pingHop.add(hop);
+                    // 2) internet: SOCKS5 CONNECT ke 1.1.1.1:443 lewat HP sumber (end-to-end)
+                    int net = -1;
+                    Socket c = null;
+                    try {
+                        long t1 = System.nanoTime();
+                        c = socksConnect(0x01010101, 443);
+                        net = (int) ((System.nanoTime() - t1) / 1000000L);
+                    } catch (Exception e) {
+                    } finally {
+                        if (c != null) try {
+                            c.close();
+                        } catch (Exception e) {
+                        }
+                    }
+                    pingNet.add(net);
+                    try {
+                        Thread.sleep(4000);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                }
+            }
+        });
+        hd.postDelayed(new Runnable() {
+            public void run() {
+                if (!running || stop) return;
+                meter.update(upBytes.get(), downBytes.get());
+                try {
+                    NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                    nm.notify(2, notif());
+                } catch (Exception e) {
+                }
+                if (Modes.get() == Modes.HEMAT && batteryLow()) {
+                    lastError = "Berhenti otomatis: baterai di bawah " + Modes.HEMAT_BATTERY_STOP + "% (mode Hemat).";
+                    requestStop();
+                    return;
+                }
+                hd.postDelayed(this, 2000);
+            }
+        }, 2000);
+    }
+
+    private boolean batteryLow() {
+        try {
+            Intent b = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+            if (b == null) return false;
+            int lvl = b.getIntExtra("level", -1);
+            int sc = b.getIntExtra("scale", 100);
+            int status = b.getIntExtra("status", -1);
+            boolean charging = status == 2 || status == 5;
+            return !charging && lvl >= 0 && (lvl * 100 / sc) < Modes.HEMAT_BATTERY_STOP;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private Notification notif() {
@@ -125,10 +247,16 @@ public class VpnClientService extends VpnService {
             b = new Notification.Builder(this);
         }
         PendingIntent pi = PendingIntent.getActivity(this, 1, new Intent(this, MainActivity.class), 0);
-        b.setContentTitle("SockShare terhubung")
-                .setContentText("Lewat " + srvHost + ":" + srvPort)
+        String line1 = "\u2193 " + Fmt.speed(meter.downSpeed) + "  \u2191 " + Fmt.speed(meter.upSpeed)
+                + "  \u00b7  " + Ping.text(pingNet.avg());
+        String line2 = "Lewat " + srvHost + ":" + srvPort + "  \u00b7  HP " + Ping.text(pingHop.avg())
+                + "\nTotal " + Fmt.size(upBytes.get() + downBytes.get()) + "  \u00b7  " + flowsN.get() + " koneksi";
+        b.setContentTitle("StarNett terhubung \u00b7 " + Modes.name(Modes.get()))
+                .setContentText(line1)
+                .setStyle(new Notification.BigTextStyle().bigText(line1 + "\n" + line2))
                 .setSmallIcon(android.R.drawable.stat_sys_download)
                 .setContentIntent(pi)
+                .setOnlyAlertOnce(true)
                 .setOngoing(true);
         return b.build();
     }
@@ -286,6 +414,7 @@ public class VpnClientService extends VpnService {
                             break;
                         }
                         o.write(d);
+                        Modes.up.acquire(d.length);
                         upBytes.addAndGet(d.length);
                     }
                     synchronized (f) {
@@ -304,6 +433,7 @@ public class VpnClientService extends VpnService {
             int n;
             while ((n = in.read(buf)) >= 0) {
                 if (n == 0) continue;
+                Modes.down.acquire(n);
                 int off = 0;
                 while (off < n) {
                     int len = Math.min(MSS, n - off);
@@ -664,6 +794,9 @@ public class VpnClientService extends VpnService {
         }
         pfd = null;
         pool.shutdownNow();
+        hd.removeCallbacksAndMessages(null);
+        if (wl != null && wl.isHeld()) wl.release();
+        if (wfl != null && wfl.isHeld()) wfl.release();
         if (stopSvc) {
             stopForeground(true);
             stopSelf();

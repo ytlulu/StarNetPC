@@ -1,7 +1,8 @@
-"""StarDevNett untuk Windows - penerima koneksi data seluler dari HP (SockShare)."""
+"""StarDevNett untuk Windows - penerima koneksi data seluler dari HP (StarNett)."""
 import collections
 import os
 import queue
+import socket
 import sys
 import threading
 import time
@@ -10,7 +11,7 @@ import relay
 import winnet
 
 APP_NAME = "StarDevNett"
-VERSION = "1.1-win"
+VERSION = "1.4-win"
 
 
 def fmt_size(b):
@@ -28,6 +29,39 @@ def fmt_size(b):
 
 def fmt_speed(bps):
     return fmt_size(bps).replace(" B", " B/s").replace("KB", "KB/s").replace("MB", "MB/s").replace("GB", "GB/s")
+
+
+class PingSeries:
+    """10 sampel latensi terakhir (ms, -1 = gagal): rata-rata & jitter."""
+
+    def __init__(self):
+        self.s = collections.deque(maxlen=10)
+
+    def add(self, ms):
+        self.s.append(ms)
+
+    def clear(self):
+        self.s.clear()
+
+    def avg(self):
+        v = [x for x in list(self.s) if x >= 0]
+        return int(sum(v) / len(v)) if v else -1
+
+    def jitter(self):
+        v = list(self.s)
+        d = [abs(b - a) for a, b in zip(v, v[1:]) if a >= 0 and b >= 0]
+        return int(sum(d) / len(d)) if d else 0
+
+
+def ping_text(ms):
+    return "-- ms" if ms < 0 else "%d ms" % ms
+
+
+def ping_level(ms):
+    """0 bagus, 1 sedang, 2 buruk, -1 belum ada."""
+    if ms < 0:
+        return -1
+    return 0 if ms < 80 else (1 if ms < 160 else 2)
 
 
 class Meter:
@@ -70,6 +104,10 @@ class Controller:
         self.running = False
         self.cfg = None
         self.host = ""
+        self.ping_hop = PingSeries()   # ke HP sumber (WiFi Direct / USB)
+        self.ping_net = PingSeries()   # internet lewat HP sumber
+        self._up = None
+        self._ping_gen = 0
 
     def resolve_host(self, cfg):
         """Return (host, port) HP sumber."""
@@ -105,16 +143,24 @@ class Controller:
             return False
         up = relay.Upstream(host, port, cfg["user"], cfg["pass"])
         ok, msg, ms = relay.self_test(up)
+        if not ok and "password" in msg and cfg["pass"] == "starnett":
+            # HP masih versi lama: password bawaannya "sockshare"
+            up2 = relay.Upstream(host, port, cfg["user"], "sockshare")
+            ok2, msg2, ms2 = relay.self_test(up2)
+            if ok2:
+                self.log("HP sumber versi lama terdeteksi (password lama dipakai). Update app HP ke versi terbaru.")
+                up, ok, msg, ms = up2, ok2, msg2, ms2
         if not ok:
             self.log("Tes ke HP gagal: %s" % msg)
             if "password" in msg or "auth" in msg:
-                self.log("Cek username/password SOCKS (bawaan: yt / sockshare).")
+                self.log("Cek username/password SOCKS (bawaan: yt / starnett).")
             elif cfg["mode"] == "usb":
                 self.log("Pastikan 'MULAI BAGIKAN' aktif di HP dan USB debugging menyala.")
             return False
         self.log("Tes OK lewat HP (%s, %d ms)" % (msg, ms))
         self.stats = relay.Stats()
         self.relay = relay.Relay(int(cfg["local_port"]), up, self.stats)
+        self.relay.set_mode(cfg.get("perf", "seimbang"))
         try:
             self.relay.start()
         except OSError as e:
@@ -128,9 +174,46 @@ class Controller:
                 self.log("Gagal set proxy sistem: %s" % e)
         self.cfg = cfg
         self.host = "%s:%d" % (host, port)
+        self._up = up
         self.running = True
+        self.ping_hop.clear()
+        self.ping_net.clear()
+        self._ping_gen += 1
+        threading.Thread(target=self._ping_loop, args=(self._ping_gen,), daemon=True).start()
         self.log("Tersambung. Relay lokal 127.0.0.1:%s (HTTP + SOCKS5)" % cfg["local_port"])
         return True
+
+    def set_mode(self, name):
+        if self.relay:
+            self.relay.set_mode(name)
+        if self.cfg is not None:
+            self.cfg["perf"] = name
+
+    def _ping_loop(self, gen):
+        while self.running and gen == self._ping_gen:
+            up = self._up
+            if up is None:
+                break
+            # 1) HP sumber: waktu TCP connect
+            t0 = time.time()
+            try:
+                s = socket.create_connection((up.host, up.port), timeout=3)
+                s.close()
+                self.ping_hop.add(int((time.time() - t0) * 1000))
+            except OSError:
+                self.ping_hop.add(-1)
+            # 2) internet: SOCKS5 CONNECT 1.1.1.1:443 lewat HP sumber (end-to-end)
+            t1 = time.time()
+            try:
+                s = relay.socks5_connect(up, "1.1.1.1", 443, timeout=4)
+                s.close()
+                self.ping_net.add(int((time.time() - t1) * 1000))
+            except Exception:
+                self.ping_net.add(-1)
+            for _ in range(8):  # tidur 4 dtk, tapi responsif saat stop
+                if not self.running or gen != self._ping_gen:
+                    return
+                time.sleep(0.5)
 
     def stop(self):
         if not self.running and not winnet.proxy_dirty():
@@ -155,6 +238,7 @@ def run_cli(argv):
     ap = argparse.ArgumentParser(prog=APP_NAME, description="StarDevNett (CLI)")
     ap.add_argument("--cli", action="store_true")
     ap.add_argument("--mode", choices=["wifi", "usb"])
+    ap.add_argument("--perf", choices=["hemat", "seimbang", "speed"])
     ap.add_argument("--host")
     ap.add_argument("--port", type=int)
     ap.add_argument("--user")
@@ -164,6 +248,7 @@ def run_cli(argv):
     a = ap.parse_args(argv)
     cfg = winnet.load_cfg()
     if a.mode: cfg["mode"] = a.mode
+    if a.perf: cfg["perf"] = a.perf
     if a.host: cfg["host"] = a.host
     if a.port: cfg["port"] = a.port
     if a.user is not None: cfg["user"] = a.user
@@ -203,8 +288,8 @@ def run_gui():
     root = tk.Tk()
     root.title("%s - Berbagi data seluler" % APP_NAME)
     root.configure(bg=BG)
-    root.geometry("470x820")
-    root.minsize(440, 760)
+    root.geometry("470x930")
+    root.minsize(440, 870)
     try:
         root.iconbitmap(resource_path(os.path.join("assets", "icon.ico")))
     except Exception:
@@ -295,6 +380,33 @@ def run_gui():
     lbl(c2, "Aplikasi yang tidak ikut proxy sistem: set manual SOCKS5 127.0.0.1:port lokal "
             "(tanpa login).", 8, wraplength=410, justify="left").pack(anchor="w", pady=(6, 0))
 
+    # ---- kartu mode ----
+    c3 = card(root)
+    lbl(c3, "MODE", 9, TXT, True).pack(anchor="w", pady=(0, 6))
+    v_perf = tk.StringVar(value=cfg.get("perf", "seimbang"))
+    prow = tk.Frame(c3, bg=CARD)
+    prow.pack(fill="x")
+    MODE_DESC = {
+        "hemat": "Batas \u00b1400 KB/s per arah, buffer kecil. Hemat kuota & baterai HP.",
+        "seimbang": "Tanpa batas, buffer standar. Pilihan sehari-hari.",
+        "speed": "Tanpa batas, buffer maksimal. Cocok untuk unduhan besar.",
+    }
+    tv_mode_desc = lbl(c3, MODE_DESC.get(v_perf.get(), ""), 8, wraplength=410, justify="left")
+
+    def on_perf():
+        m = v_perf.get()
+        tv_mode_desc.config(text=MODE_DESC.get(m, ""))
+        ctl.set_mode(m)
+        c = read_cfg(silent=True)
+        if c:
+            winnet.save_cfg(c)
+
+    for text, val in (("Hemat", "hemat"), ("Seimbang", "seimbang"), ("Speed", "speed")):
+        tk.Radiobutton(prow, text=text, value=val, variable=v_perf, bg=CARD, fg=TXT,
+                       selectcolor="#1F2630", activebackground=CARD, activeforeground=TXT,
+                       font=("Segoe UI", 10), command=on_perf).pack(side="left", padx=(0, 16))
+    tv_mode_desc.pack(anchor="w", pady=(6, 0))
+
     # ---- tombol ----
     bt = tk.Frame(root, bg=BG)
     bt.pack(fill="x", padx=16, pady=(8, 2))
@@ -330,8 +442,12 @@ def run_gui():
     tv_utotal = lbl(cu, "Total 0 B", 9, MUTED)
     tv_utotal.pack(anchor="w")
 
+    tv_ping = lbl(st, "Ping: -- ms", 10, TXT, True)
+    tv_ping.pack(anchor="w", pady=(8, 0))
+    tv_ping_sub = lbl(st, "HP sumber -- ms  \u00b7  jitter 0 ms", 8, MUTED)
+    tv_ping_sub.pack(anchor="w")
     tv_all = lbl(st, "Total data sesi: 0 B", 9, MUTED)
-    tv_all.pack(anchor="w", pady=(8, 4))
+    tv_all.pack(anchor="w", pady=(6, 4))
     graph = tk.Canvas(st, height=56, bg="#0A0E14", highlightthickness=1,
                       highlightbackground=STROKE)
     graph.pack(fill="x")
@@ -351,10 +467,11 @@ def run_gui():
         usb = v_mode.get() == "usb"
         e_host.config(state="disabled" if usb else "normal")
 
-    def read_cfg():
+    def read_cfg(silent=False):
         try:
             c = {
                 "mode": v_mode.get(),
+                "perf": v_perf.get(),
                 "host": v_host.get().strip(),
                 "port": int(v_port.get()),
                 "user": v_user.get(),
@@ -367,7 +484,8 @@ def run_gui():
                 raise ValueError
             return c
         except ValueError:
-            messagebox.showerror(APP_NAME, "Port harus angka 1-65535.")
+            if not silent:
+                messagebox.showerror(APP_NAME, "Port harus angka 1-65535.")
             return None
 
     def set_busy(b):
@@ -442,6 +560,14 @@ def run_gui():
             tv_conn.config(text="0 koneksi")
             if hist:
                 hist.clear()
+        if ctl.running:
+            a = ctl.ping_net.avg()
+            col = {0: OK, 1: ACCENT, 2: BAD}.get(ping_level(a), TXT)
+            tv_ping.config(text="Ping: " + ping_text(a), fg=col)
+            tv_ping_sub.config(text="HP sumber %s  \u00b7  jitter %d ms" % (ping_text(ctl.ping_hop.avg()), ctl.ping_net.jitter()))
+        else:
+            tv_ping.config(text="Ping: -- ms", fg=TXT)
+            tv_ping_sub.config(text="Belum tersambung")
         tv_dspeed.config(text=fmt_speed(meter.down))
         tv_uspeed.config(text=fmt_speed(meter.up))
         tv_dtotal.config(text="Total " + fmt_size(last["down"]))

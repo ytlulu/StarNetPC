@@ -111,7 +111,8 @@ public class Socks5Server {
                 String u = new String(readFully(in, ul), "UTF-8");
                 int pl = rd(in);
                 String p = new String(readFully(in, pl), "UTF-8");
-                if (!(u.equals(user) && p.equals(pass))) {
+                // "sockshare" = password lama (HP/PC versi sebelumnya tetap bisa sambung)
+                if (!(u.equals(user) && (p.equals(pass) || p.equals("sockshare")))) {
                     out.write(new byte[] {1, 1});
                     out.flush();
                     return;
@@ -229,6 +230,7 @@ public class Socks5Server {
                             int dp = ((buf[o] & 255) << 8) | (buf[o + 1] & 255);
                             o += 2;
                             if (n - o <= 0) continue;
+                            Modes.up.acquire(n - o);
                             outS.send(new DatagramPacket(buf, o, n - o, dst, dp));
                             ProxyService.upBytes.addAndGet(n - o);
                         }
@@ -260,6 +262,7 @@ public class Socks5Server {
                             System.arraycopy(a, 0, buf, st + 4, a.length);
                             buf[st + 4 + a.length] = (byte) (p.getPort() >> 8);
                             buf[st + 5 + a.length] = (byte) p.getPort();
+                            Modes.down.acquire(n);
                             relay.send(new DatagramPacket(buf, st, hl + n, ca, cPort[0]));
                             ProxyService.downBytes.addAndGet(n);
                         }
@@ -316,8 +319,8 @@ public class Socks5Server {
             try {
                 if (net != null) net.bindSocket(s);
                 s.setTcpNoDelay(true);
-                s.setReceiveBufferSize(262144);
-                s.setSendBufferSize(262144);
+                s.setReceiveBufferSize(Modes.bufSize());
+                s.setSendBufferSize(Modes.bufSize());
                 s.connect(new InetSocketAddress(addrs[i], dport), 8000);
                 return s;
             } catch (IOException e) {
@@ -346,11 +349,13 @@ public class Socks5Server {
                 OutputStream o = to.getOutputStream();
                 int n;
                 while ((n = i.read(buf)) > 0) {
+                    if (down) Modes.down.acquire(n);
+                    else Modes.up.acquire(n);
                     o.write(buf, 0, n);
                     if (down) ProxyService.downBytes.addAndGet(n);
                     else ProxyService.upBytes.addAndGet(n);
                 }
-            } catch (IOException e) {
+            } catch (Exception e) {
             } finally {
                 close(from);
                 close(to);

@@ -16,7 +16,8 @@ DEFAULTS = {
     "host": "",              # kosong = deteksi otomatis
     "port": 1080,
     "user": "yt",
-    "pass": "sockshare",
+    "pass": "starnett",
+    "perf": "seimbang",      # hemat | seimbang | speed
     "local_port": 10808,
     "set_proxy": True,
     "usb_port": 11080,
@@ -29,6 +30,8 @@ def load_cfg():
             d = json.load(f)
         out = dict(DEFAULTS)
         out.update(d)
+        if out.get("pass") == "sockshare":  # password bawaan versi lama
+            out["pass"] = "starnett"
         return out
     except Exception:
         return dict(DEFAULTS)
